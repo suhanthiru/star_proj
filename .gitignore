@@ -1,0 +1,23 @@
+# Sensitive Data / Credentials
+.env
+.env.local
+.env.development.local
+config.json
+
+# Operating System Junk
+.DS_Store
+Thumbs.db
+
+# Python Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+.venv/
+env/
+
+# Data and Ephemerides
+*.bsp
+*.csv.gz
