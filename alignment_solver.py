@@ -1,100 +1,112 @@
+"""
+alignment_solver.py  --  fit the word onto the stars WITHOUT distorting it.
+
+WHY THIS SHAPE
+--------------
+The old solver ran an 80-step spring relaxation (pull-to-nearest-star +
+edge-length + Laplacian smoothing) followed by a Hungarian assignment that
+teleported every vertex onto a distinct star. Stars are not arranged in letter
+shapes, so that guaranteed a scrambled word: the Laplacian term acted as a
+curve-shortening flow that collapsed letters into knots, and the teleport broke
+the baseline and proportions.
+
+Here the word is only ever moved by a single GLOBAL SIMILARITY transform
+(uniform scale + rotation + translation) applied to every node at once. Because
+all nodes share one transform, the letters mathematically cannot distort:
+legibility is preserved by construction. The transform is chosen by
+similarity-ICP -- repeatedly match each node to its nearest star and solve the
+closed-form best similarity transform (Umeyama 1991) -- so the word sits as
+nicely as possible among the local stars while staying rigid.
+
+Star "snapping" survives only as an OPTIONAL, distance-capped cosmetic nudge: a
+node moves onto a star only if a star is already within a fraction of the local
+stroke spacing, so it can never move far enough to bend a letter.
+
+PUBLIC API
+----------
+    get_best_alignment(word_nodes, word_edges, sky_nodes, center_point)
+        -> (smooth_nodes, snapped_nodes, mse)
+
+    smooth_nodes  -- the undistorted, fitted word; what the renderer draws.
+    snapped_nodes -- smooth_nodes with the capped cosmetic snap (for star lookup).
+    mse           -- mean residual to nearest stars (fit quality; smaller=better).
+"""
+
 import numpy as np
 from scipy.spatial import KDTree
-from scipy.optimize import linear_sum_assignment
 
-def rigid_icp(source, target, iterations=15):
+
+def _umeyama_similarity(src, dst):
+    """Closed-form best similarity transform (scale s, rotation R, translation t)
+    mapping src onto dst, minimizing sum ||s*R*src + t - dst||^2 (Umeyama 1991).
+    The reflection guard keeps R a proper rotation, so letters are never mirrored."""
+    mu_s = src.mean(0)
+    mu_d = dst.mean(0)
+    Sc = src - mu_s
+    Dc = dst - mu_d
+    cov = (Dc.T @ Sc) / len(src)
+    U, D, Vt = np.linalg.svd(cov)
+    S = np.eye(2)
+    if np.linalg.det(U) * np.linalg.det(Vt) < 0:
+        S[-1, -1] = -1
+    R = U @ S @ Vt
+    var_s = (Sc ** 2).sum() / len(src)
+    s = np.trace(np.diag(D) @ S) / var_s
+    t = mu_d - s * R @ mu_s
+    return s, R, t
+
+
+def similarity_icp(source, target, iterations=20):
+    """Iterative Closest Point restricted to SIMILARITY transforms.
+    Returns the transformed source. Shape is preserved exactly every step."""
     src = source.copy()
+    tree = KDTree(target)
     for _ in range(iterations):
-        tree = KDTree(target)
-        _, indices = tree.query(src)
-        matched_target = target[indices]
-        
-        centroid_src = np.mean(src, axis=0)
-        centroid_tgt = np.mean(matched_target, axis=0)
-        
-        src_centered = src - centroid_src
-        tgt_centered = matched_target - centroid_tgt
-        
-        H = src_centered.T @ tgt_centered
-        U, S, Vt = np.linalg.svd(H)
-        R = Vt.T @ U.T
-        
-        if np.linalg.det(R) < 0:
-            Vt[1, :] *= -1
-            R = Vt.T @ U.T
-            
-        src = (R @ src_centered.T).T + centroid_tgt
+        _, idx = tree.query(src)
+        s, R, t = _umeyama_similarity(src, target[idx])
+        src = (s * (R @ src.T).T) + t
     return src
 
-def get_best_alignment(word_nodes, word_edges, sky_nodes, center_point): 
-    tree = KDTree(sky_nodes[:, :2])
-    local_indices = tree.query_ball_point(center_point, r=250) 
-    if len(local_indices) < len(word_nodes):
-        local_indices = tree.query_ball_point(center_point, r=500)
-    local_sky = sky_nodes[local_indices, :2]
 
-    template = word_nodes[:, :2].copy()
-    current_width = np.ptp(template[:, 0]) 
-    sky_width = np.ptp(local_sky[:, 0])
-    
-    if current_width > 0:
-        template = template * ((sky_width * 0.6) / current_width) 
-        
-    template = template - np.mean(template, axis=0) + center_point
-    aligned_nodes = rigid_icp(template, local_sky, iterations=15)
+def get_best_alignment(word_nodes, word_edges, sky_nodes, center_point,
+                       patch_radius=120.0, snap_fraction=0.6):
+    template = word_nodes[:, :2].astype(float).copy()
+    xy = sky_nodes[:, :2]
+    tree = KDTree(xy)
 
-    orig_lengths = []
-    for e in word_edges:
-        p1_idx, p2_idx = int(e[0]), int(e[1])
-        orig_lengths.append(np.linalg.norm(aligned_nodes[p1_idx] - aligned_nodes[p2_idx]))
-        
-    points = aligned_nodes.copy()
-    sky_tree = KDTree(local_sky)
-    
-    # The Titanium Springs
-    lambda_star = 0.05 
-    lambda_edge = 4.0  
-    lambda_lap  = 3.0  
-    lr = 0.1           
+    # local star patch around the anchor; expand to nearest-k if it's too sparse
+    local_idx = tree.query_ball_point(center_point, r=patch_radius)
+    if len(local_idx) < max(8, len(template)):
+        k = min(max(200, len(template) * 4), len(xy))
+        _, local_idx = tree.query(center_point, k=k)
+        local_idx = np.atleast_1d(local_idx)
+    local = xy[local_idx]
 
-    for _ in range(80): 
-        forces = np.zeros_like(points)
-        _, nn_idx = sky_tree.query(points)
-        nearest_stars = local_sky[nn_idx]
-        forces += lambda_star * (nearest_stars - points)
-        
-        for idx, e in enumerate(word_edges):
-            p1_idx, p2_idx = int(e[0]), int(e[1])
-            p1, p2 = points[p1_idx], points[p2_idx]
-            vec = p2 - p1
-            dist = np.linalg.norm(vec)
-            if dist > 0.0001:
-                dir_vec = vec / dist
-                force_mag = (dist - orig_lengths[idx]) * lambda_edge
-                forces[p1_idx] += force_mag * dir_vec
-                forces[p2_idx] -= force_mag * dir_vec
-                
-        for i in range(len(points)):
-            neighbors = []
-            for e in word_edges:
-                if int(e[0]) == i: neighbors.append(points[int(e[1])])
-                elif int(e[1]) == i: neighbors.append(points[int(e[0])])
-            if neighbors:
-                centroid = np.mean(neighbors, axis=0)
-                forces[i] += lambda_lap * (centroid - points[i])
-                
-        points += forces * lr
+    # scale the word to a sensible fraction of the patch, keep aspect ratio
+    span_word = max(np.ptp(template[:, 0]), 1e-9)
+    span_sky = np.ptp(local[:, 0]) if np.ptp(local[:, 0]) > 0 else 1.0
+    template *= (span_sky * 0.6) / span_word
+    template += center_point - template.mean(0)
 
-    cost_matrix = np.linalg.norm(points[:, np.newaxis, :] - local_sky[np.newaxis, :, :], axis=2)
-    row_ind, col_ind = linear_sum_assignment(cost_matrix)
-    
-    final_nodes = np.copy(word_nodes)
-    final_nodes[:, :2] = points 
-    safe_snap_distance = np.mean(orig_lengths) * 2.5 
-    
-    for r, c in zip(row_ind, col_ind):
-        if cost_matrix[r, c] < safe_snap_distance:
-            final_nodes[r, :2] = local_sky[c]
+    # the ONLY transform allowed: global similarity -> no per-letter distortion
+    smooth = similarity_icp(template, local, iterations=20)
 
-    mse = np.mean(np.linalg.norm(final_nodes[:, :2] - template, axis=1))
-    return points, final_nodes, mse
+    # typical spacing between adjacent outline nodes (used to cap snapping)
+    if len(word_edges):
+        seg = np.linalg.norm(smooth[word_edges[:, 0]] - smooth[word_edges[:, 1]], axis=1)
+        typical = np.median(seg)
+    else:
+        typical = np.ptp(smooth, axis=0).mean() / 20.0
+
+    # residual to nearest star (fit quality) + optional capped cosmetic snap
+    local_tree = KDTree(local)
+    dist, nn = local_tree.query(smooth)
+    snapped = smooth.copy()
+    close = dist < snap_fraction * typical
+    snapped[close] = local[nn[close]]
+    mse = float(np.mean(dist))
+
+    # return 3-col arrays (renderer uses [:, :2]) to match the pipeline signature
+    smooth_out = np.column_stack([smooth, np.zeros(len(smooth))])
+    snapped_out = np.column_stack([snapped, np.zeros(len(snapped))])
+    return smooth_out, snapped_out, mse

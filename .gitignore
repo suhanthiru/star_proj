@@ -21,3 +21,7 @@ env/
 # Data and Ephemerides
 *.bsp
 *.csv.gz
+
+# Generated docs and render outputs
+docs/
+test_renders/
