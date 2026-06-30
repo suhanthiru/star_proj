@@ -5,13 +5,13 @@ Algorithmic engine designed to parse stellar databases, compute star locations a
 
 ## Proj. Structure 
 
-'START.py': Entry point to launch code
-'ingestion.py': Data pipeline from star catalogs
-'alignment_solver.py': Core math/geometric algorithms to align structures
-'gnn_engine.py': Graph Neural Network or graph-based relational structural processing
-'renderer.py': Visualizes the computed celestial projections
-'observatory.py': Manages observer-centric coordinate systems and positioning
-'vectorizer.py': Transforms raw coordinate matrices into optimized vector spaces
+`START.py`: Entry point to launch code
+`ingestion.py`: Data pipeline from star catalogs
+`alignment_solver.py`: Core math/geometric algorithms to align structures
+`gnn_engine.py`: Graph Neural Network or graph-based relational structural processing
+`renderer.py`: Visualizes the computed celestial projections
+`observatory.py`: Manages observer-centric coordinate systems and positioning
+`vectorizer.py`: Transforms raw coordinate matrices into optimized vector spaces
 
 
 ##  Prereqs & External Data
