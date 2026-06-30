@@ -27,9 +27,9 @@ Roadmap & Upcoming Features
 
 - [x] Data injestion + Parser for stellar data
 - [x] Word Vectorization/Normalizer
-- [ ] Optimize the 'alignment_solver' algorithm for high-density star regions
+- [x] Optimize the 'alignment_solver' algorithm for high-density star regions
 - [ ] Implement interactive UI rendering inside 'renderer.py'
-- [ ] Fine-tune the graph structures within 'gnn_engine.py' for pattern matching
+- [x] Fine-tune the graph structures within 'gnn_engine.py' for pattern matching
 
 
 All through the night, your glorious eyes
